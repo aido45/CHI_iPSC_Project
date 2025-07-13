@@ -78,7 +78,7 @@ BiocManager::install(c(
 ```
 ---
 
-Python Environment
+## Python Environment
 The Conda environment used for upstream pre-processing and optional exploratory analysis (e.g. pyDESeq2, GOATOOLS) is defined in environment.yml.
 
 To create and activate the environment, run this in bash:
