@@ -83,6 +83,7 @@ The Conda environment used for upstream pre-processing and optional exploratory 
 
 To create and activate the environment, run this in bash:
 
+.bash.
 conda env create -f environment.yml
 conda activate chi_pipeline
 
