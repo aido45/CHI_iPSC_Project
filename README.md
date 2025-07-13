@@ -1,24 +1,25 @@
 # Transcriptomic Profiling of Congenital Hyperinsulinism Beta Cells – Day 9 and Day 16
 
-This repository contains curated R scripts and output resources for an MSc research project at King’s College London. The project investigates transcriptomic differences in insulin-producing beta cells derived from induced pluripotent stem cells (iPSCs), specifically focusing on congenital hyperinsulinism (CHI) caused by ABCC8 mutations. The repository is designed for reproducibility, downstream analysis, and modular reuse.
+This repository contains curated R scripts and output files developed for an MSc research project at King’s College London. The project investigates transcriptomic changes in insulin-producing beta cells derived from induced pluripotent stem cells (iPSCs), focusing on congenital hyperinsulinism (CHI) caused by ABCC8 mutations. The repository is designed for reproducibility, modular reuse, and output integration with external functional analysis tools.
 
 ---
 
 ## Project Overview
 
-Congenital hyperinsulinism (CHI) is a rare genetic condition characterised by excessive insulin secretion and hypoglycaemia, often linked to inactivating mutations in genes such as ABCC8. This project uses CRISPR-modified and wild-type iPSC-derived pancreatic cells to model CHI in vitro. RNA sequencing data were analysed at two key differentiation timepoints:
+Congenital hyperinsulinism (CHI) is a rare genetic condition characterised by inappropriate insulin secretion, often resulting from inactivating mutations in the ABCC8 gene. This study uses a CRISPR-based in vitro disease model derived from human iPSCs to analyse transcriptional profiles at two critical differentiation timepoints:
 
-- **Day 9 (D9):** Endocrine progenitors  
-- **Day 16 (D16):** Insulin-positive beta-like cells
+- **Day 9 (D9)**: Endocrine progenitor stage
+- **Day 16 (D16)**: Insulin-expressing beta-like stage
 
-Differential expression analysis, gene ontology (GO), pathway enrichment (KEGG, Reactome), and gene set enrichment analysis (GSEA) were performed to investigate molecular perturbations in CHI.
+Comparative transcriptomic analysis was performed between wild-type and CRISPR-edited (ABCC8-deficient) conditions to elucidate the molecular underpinnings of CHI. The pipeline integrates differential expression analysis, enrichment analysis (GO, KEGG, Reactome, GSEA), and heatmap visualisation of key gene sets.
 
 ---
 
 ## Repository Structure
 
-The repository is organised as follows to facilitate data traceability and workflow modularity:
+The repository follows a modular structure to separate raw data, code, visual output, and downstream result tables.
 
+.
 ├── data/
 │ ├── d9_normalized_counts.csv
 │ ├── d9_DEG_results.csv
@@ -57,32 +58,30 @@ The repository is organised as follows to facilitate data traceability and workf
 ├── .gitignore
 └── README.md
 
+
 ---
 
 ## Dependencies
 
-This repository relies on both **R** and **Python** environments for various stages of the pipeline.
+This repository relies on both R and Python environments. All required packages are listed below or in the `environment.yml` file.
 
-### R Package Dependencies
+### R Packages
 
-These scripts require the following CRAN and Bioconductor packages:
-
-- `dplyr`, `tidyr`, `tibble`, `stringr`, `ggplot2`
-- `clusterProfiler`, `org.Hs.eg.db`, `enrichplot`, `biomaRt`
-- `ComplexHeatmap`, `circlize`
-
-Install using:
+Install these CRAN and Bioconductor packages before running the R scripts:
 
 ```r
 install.packages(c("dplyr", "tidyr", "tibble", "stringr", "ggplot2"))
-BiocManager::install(c("clusterProfiler", "org.Hs.eg.db", "enrichplot", "biomaRt", "ComplexHeatmap", "circlize"))
-
+BiocManager::install(c(
+  "clusterProfiler", "org.Hs.eg.db", "enrichplot", 
+  "biomaRt", "ComplexHeatmap", "circlize"
+))
+```
 ---
 
-## Python Environment
-The environment.yml file lists all dependencies used to run upstream processing or optional GSEA steps in Python (e.g. using pyDESeq2, GOATOOLS, or Jupyter notebooks for exploratory data handling).
+Python Environment
+The Conda environment used for upstream pre-processing and optional exploratory analysis (e.g. pyDESeq2, GOATOOLS) is defined in environment.yml.
 
-Create the conda environment via:
+To create and activate the environment, run this in bash:
 
 conda env create -f environment.yml
 conda activate chi_pipeline
@@ -90,33 +89,47 @@ conda activate chi_pipeline
 ---
 
 ## Key Features
-- Modular scripts for Day 9 and Day 16 analysis, compatible with different datasets or updated inputs.
-- Differential expression filtering, identifier mapping (Ensembl → HGNC → Entrez), and integrated annotation.
-- Enrichment analysis via GO, KEGG, Reactome, and MSigDB Hallmark collections using clusterProfiler and GSEA.
-- Automated mini-heatmap generation for DEG–GSEA overlapping genes with proper CRISPR vs WT visual comparison.
-- Output-ready formatting for DAVID and PANTHER via structured gene list export.
+- Timepoint-specific modular scripts for Day 9 and Day 16 RNA-seq comparisons
+- Gene identifier harmonisation (Ensembl, HGNC, Entrez) to enable unified downstream enrichment analysis
+- Differential gene expression processing, including filtering and annotation
+- Gene set enrichment analysis (GSEA) using pre-ranked gene vectors
+- Functional enrichment via GO, KEGG, and Reactome using clusterProfiler
+- Automated mini-heatmap generation for DEG–GSEA overlapping core genes
+- Condition-aware visualisation (CRISPR vs WT) for publication-quality figures
+- External compatibility: Structured output of gene lists for DAVID and PANTHER analysis platforms
 
 ---
 
-## Pipeline
-The general workflow followed in both d9_analysis.R and d16_analysis.R is as follows:
-1. Input: Load normalized counts and annotated DEG results
-2. Log transformation: Apply log1p to normalized expression data
-3. Gene ID harmonisation: Map Ensembl IDs to HGNC symbols and Entrez IDs
-4. Enrichment analyses:
-  a) GO, KEGG, and Reactome enrichment (via enrichGO, enrichKEGG, enrichPathway)
-  b) Gene Set Enrichment Analysis (GSEA) with custom ranking vectors
-5. Output export: Save enrichment result tables to docs/
-6. Mini heatmap plotting:
-  a) Identify core enriched genes per GSEA pathway
-  b) Subset expression matrix by DEG–GSEA overlap
-  c) Perform row-wise Z-score normalization
-  d) Plot condition-aware clustered heatmaps
-7. External gene list preparation: Export ranked gene lists to docs/david/ and docs/panther/
+## Pipeline structure
+
+Each script (d9_analysis.R and d16_analysis.R) follows this workflow:
+
+1. Input loading
+  - Normalised count matrix
+  - Differential expression results (DEG)
+  - Complete gene expression list (for ranking)
+2. Preprocessing
+  - Log-transformation of count matrix
+  - Row and column reformatting for heatmap compatibility
+3. Gene ID harmonisation
+  - Map Ensembl IDs to HGNC symbols and Entrez IDs using biomaRt
+4. Enrichment analysis
+  - GO, KEGG, and Reactome overrepresentation tests
+  - GSEA using MSigDB pathways (Hallmark, KEGG, Reactome)
+5. Heatmap plotting
+  - Identify top enriched pathways
+  - Extract core enrichment genes from GSEA
+  - Subset DEG–GSEA overlap for each top term
+  - Z-score normalise and visualise via ComplexHeatmap
+6. Export outputs
+  - Save all enrichment results as CSVs in docs/d9/ and docs/d16/
+  - Export gene lists for DAVID and PANTHER in respective folders
 
 ---
 
 ## Citation
-If you use or adapt this repository, please cite the following MSc research project:
+If you use this repository or adapt the pipeline, please cite the MSc research project:
 
-Transcriptomic profiling of insulin-expressing beta cells from congenital hyperinsulinism pancreas and induced pluripotent stem cells – MSc Research Project, King’s College London, 2025.
+> Saldanha, A. (2025). *Transcriptomic profiling of insulin-expressing beta cells from congenital hyperinsulinism pancreas and induced pluripotent stem cells*. MSc in Applied Bioinformatics, King’s College London.
+
+
