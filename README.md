@@ -19,7 +19,7 @@ Comparative transcriptomic analysis was performed between wild-type and CRISPR-e
 
 The repository follows a modular structure to separate raw data, code, visual output, and downstream result tables.
 
-.
+```
 ├── data/
 │ ├── d9_normalized_counts.csv
 │ ├── d9_DEG_results.csv
@@ -57,7 +57,7 @@ The repository follows a modular structure to separate raw data, code, visual ou
 ├── LICENSE
 ├── .gitignore
 └── README.md
-
+```
 
 ---
 
@@ -83,9 +83,10 @@ The Conda environment used for upstream pre-processing and optional exploratory 
 
 To create and activate the environment, run this in bash:
 
-.bash.
+```bash
 conda env create -f environment.yml
 conda activate chi_pipeline
+```
 
 ---
 
