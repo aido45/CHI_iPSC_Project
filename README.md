@@ -63,23 +63,27 @@ The repository follows a modular structure to separate raw data, code, visual ou
 
 ## Dependencies
 
-This repository relies on both R and Python environments. All required packages are listed below or in the `environment.yml` file.
+This repository relies on both R and Python environments. Install the CRAN and Bioconductor packages before running the R scripts following the 'renv.lock' file, which contains a snapshot of all the dependencies and versions of the packages that were used in the R script. All required packages for the Python pipeline are covered in 'CHI_environment.yml' and some of the core R pacakges utilised in the script are listed below:
 
-### R Packages
+- **R Packages:**
+  - `dplyr`
+  - `biomaRt`
+  - `ClusterProfiler`
+  - `org.Hs.eg.Db`
+  - `tibble`
+  - `enrichplot`
+  - `ReactomePA`
+  - `msgidbr`
+  - `ComplexHeatmap`
+  - `tidyverse`
+  - `grid`
+  - `Circlize`
 
-Install these CRAN and Bioconductor packages before running the R scripts:
 
-```r
-install.packages(c("dplyr", "tidyr", "tibble", "stringr", "ggplot2"))
-BiocManager::install(c(
-  "clusterProfiler", "org.Hs.eg.db", "enrichplot", 
-  "biomaRt", "ComplexHeatmap", "circlize"
-))
-```
 ---
 
 ## Python Environment
-The Conda environment used for upstream pre-processing and optional exploratory analysis (e.g. pyDESeq2, GOATOOLS) is defined in environment.yml.
+The Conda environment used for upstream pre-processing and optional exploratory analysis (e.g. pyDESeq2, GOATOOLS) is defined in CHI_environment.yml.
 
 To create and activate the environment, run this in bash:
 
