@@ -1,0 +1,997 @@
+---
+title: "ClusterProfiler_2"
+output: html_document
+date: "2025-04-25"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+renv::init()
+```
+## Day 9 Transcriptomic analysis: Pathway and Functional Enrichment 
+
+This script performs downstream analyses and enrichment of upregulated and downregulated genes in CRISPR vs WT Day 9 samples. The aim is to identify pathways that are altered in Congenital Hyperinsulinism models, using KEGG, Reactome and MSigDB gene sets.
+```{r}
+# Load required libraries 
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(clusterProfiler)
+library(biomaRt)
+library(readr)
+library(purrr)
+library(fs)
+library(grid)
+library(org.Hs.eg.db)
+library(tibble)
+library(tidyr)
+library(ReactomePA)
+library(msigdbr)
+library(enrichplot)
+library(stringr)
+library(pheatmap)
+library(ComplexHeatmap)
+library(circlize)
+library(tidyverse)
+library(grid)
+library(png)
+```
+
+## Importing existing data from alternate pipeline
+
+This pipeline begins by loading the full list of genes, the list of differentially expressed genes with thresholds padj < 0.05 and |log2FC| > 0.5 and the normalised counts for both day 9 and day 16. The thresholds indicated for the list of differentially expressed genes are set with the intention of capturing significant genes.
+```{r}
+# Read the CSV files for day 9
+DEG_d9_data <- read.csv("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/Tables/D9/d9_CRISPR_vs_WT_pyDESeq2_results_sigs.csv")
+res_d9 <- read.csv("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/res_d9_full.csv") 
+
+# Load normalised count data for Day 9 and Day 16
+d9 <- read.csv("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/normalized_counts_d9.csv", row.names = 1)
+d16 <- read.csv("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/normalized_counts_d16.csv", row.names = 1)
+
+# Transpose so that genes are in rows
+d9 <- as.data.frame(t(d9))
+d16 <- as.data.frame(t(d16))
+```
+
+
+# Formation of counts matrix for downstream plotting of heatmaps for Day 9
+```{r}
+# Convert data frames to matrices
+expr_raw_d9 <- as.matrix(d9)
+
+# Log(x + 1) transform to stabilize variance
+expr_log1p_d9 <- log1p(expr_raw_d9)
+```
+
+```{r}
+# Set up connection to Ensembl
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+```
+
+```{r}
+# Collect all Ensembl IDs from both datasets
+all_ids <- unique(c(res_d9$gene_id, DEG_d9_data$gene_id))
+```
+
+```{r}
+# Fetch gene symbosl and Entrez ID annotations
+gene_annotations <- getBM(
+  attributes = c("ensembl_gene_id", "hgnc_symbol", "entrezgene_id"),
+  filters = "ensembl_gene_id",
+  values = all_ids,
+  mart = ensembl
+)
+```
+
+```{r}
+# Annotate `res_d9`
+res_d9_annot <- res_d9 %>%
+  dplyr::rename(ensembl_gene_id = gene_id) %>%  # Ensure column name matches for join
+  left_join(gene_annotations, by = "ensembl_gene_id")
+```
+
+```{r}
+# Annotate `DEG_d9_data`
+DEG_d9_annot <- DEG_d9_data %>%
+  dplyr::rename(ensembl_gene_id = gene_id) %>%  # Ensure column name matches
+  left_join(gene_annotations, by = "ensembl_gene_id")
+
+```
+
+```{r}
+# Filter DEG_d9_data with strict padj and logF2C thresholds for upregulated and downregulated genes
+strict_up_d9 <- DEG_d9_annot %>%
+  filter(padj < 0.05 & log2FoldChange > 0.5) %>%
+  filter(!is.na(hgnc_symbol)) %>%
+  distinct(hgnc_symbol) %>%
+  pull(hgnc_symbol)
+
+# Strictly downregulated genes
+strict_down_d9 <- DEG_d9_annot %>%
+  filter(padj < 0.05 & log2FoldChange < -0.5) %>%
+  filter(!is.na(hgnc_symbol)) %>%
+  distinct(hgnc_symbol) %>%
+  pull(hgnc_symbol)
+```
+
+```{r}
+# Background gene list for further downstream analyses from res_d9 as it has full list of genes
+background_genes_d9 <- res_d9_annot %>%
+  filter(baseMean > 10, !is.na(entrezgene_id)) %>%
+  pull(entrezgene_id) %>%
+  unique() %>%
+  as.character()
+```
+
+```{r}
+# Day 9 gene lists for DAVID
+write.csv(data.frame(Gene = strict_up_d9),
+          file = "DAVID_D9_Upregulated_DEGs.csv",
+          row.names = FALSE, quote = FALSE)
+
+write.csv(data.frame(Gene = strict_down_d9),
+          file = "DAVID_D9_Downregulated_DEGs.csv",
+          row.names = FALSE, quote = FALSE)
+
+write.csv(data.frame(Gene = background_genes_d9),
+          file = "DAVID_D9_Background_Genes.csv",
+          row.names = FALSE, quote = FALSE)
+
+
+# Day 9 - PANTHER-compatible gene lists (.txt format, no headers)
+writeLines(strict_up_d9, "PANTHER_D9_Upregulated_DEGs.txt")
+writeLines(strict_down_d9, "PANTHER_D9_Downregulated_DEGs.txt")
+writeLines(background_genes_d9, "PANTHER_D9_Background_Genes.txt")
+```
+
+
+# Volcano plot for top 15 most significant genes with CHI markers
+```{r}
+# Define genes of interest
+genes_of_interest <- c("INS", "ABCC8", "PDX1", "KCNJ11", "GCK", "GLUD1", "MAFA")
+```
+
+```{r}
+# Annotate significance
+res_d9_annot <- res_d9_annot %>%
+  mutate(
+    log10padj = -log10(padj),
+    Significance = case_when(
+      padj < 0.05 & log2FoldChange > 0.5 ~ "Upregulated",
+      padj < 0.05 & log2FoldChange < -0.5 ~ "Downregulated",
+      TRUE ~ "Not Significant"
+    )
+  )
+```
+
+```{r}
+# Count the number of genes in each significance category
+res_d9_annot %>%
+  count(Significance)
+```
+
+```{r}
+# Identify top 15 most significant genes by lowest padj
+top15_genes <- res_d9_annot %>%
+  filter(!is.na(padj)) %>%
+  arrange(padj) %>%
+  slice_head(n = 15) %>%
+  pull(hgnc_symbol)
+
+# Combine top 15 most significant genes + genes of interest (remove duplicates)
+genes_to_label <- res_d9_annot %>%
+  filter(hgnc_symbol %in% union(top15_genes, genes_of_interest))
+
+# Volcano plot
+ggplot(res_d9_annot, aes(x = log2FoldChange, y = log10padj)) +
+  geom_point(aes(color = Significance), alpha = 0.6, size = 1.5) +
+  scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue", "Not Significant" = "gray")) +
+  geom_vline(xintercept = c(-0.5, 0.5), linetype = "dashed", color = "black") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+  geom_text_repel(
+    data = genes_to_label,
+    aes(label = hgnc_symbol),
+    size = 3.5,
+    color = "black",
+    max.overlaps = Inf,
+    force = 8,
+    segment.size = 0.2
+  ) +
+  theme_minimal(base_size = 12) +
+  labs(
+    title = "Volcano Plot: CRISPR_d9 vs WT_d9",
+    subtitle = "Top 15 most significant genes + CHI markers",
+    x = "log2 Fold Change",
+    y = "-log10(padj)"
+  )
+
+# Save as png
+ggsave("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/figures/d9_CRISPR_vs_WT_sig_volcano.png", width = 5, height = 5)
+```
+
+```{r}
+# Use annotated and filtered ENTREZ IDs from biomaRt for mapping 'strict_up_d9', which contains HGNC symbols of upregulated genes
+entrez_up_d9 <- res_d9_annot %>% 
+  filter(hgnc_symbol %in% strict_up_d9) %>% 
+  pull(entrezgene_id) %>% 
+  na.omit() %>% 
+  unique() %>%
+  as.character()
+
+entrez_down_d9 <- res_d9_annot %>% 
+  filter(hgnc_symbol %in% strict_down_d9) %>% 
+  pull(entrezgene_id) %>% 
+  na.omit() %>% 
+  unique() %>% 
+  as.character()
+```
+
+
+# Gene Ontology: Over-representation analysis (BP = biological processes, CC = cellular components, MF = molecular functions)
+```{r}
+# GO enrichment over three ontologies
+ontologies <- c("BP", "CC", "MF")
+ego_up_d9_results <- list()
+
+for (ont in ontologies) {
+  cat("\nRunning enrichment for D9 UPREGULATED genes in:", ont, "\n")
+  ego_up_d9 <- enrichGO(
+    gene          = entrez_up_d9,
+    OrgDb         = org.Hs.eg.db,           
+    keyType       = "ENTREZID",
+    ont           = ont,
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 0.05,
+    qvalueCutoff  = 0.2,
+    universe      = background_genes_d9,
+    readable      = TRUE           
+  )
+  ego_up_d9_results[[ont]] <- ego_up_d9
+  print(head(as.data.frame(ego_up_d9)))
+  write.csv(
+    as.data.frame(ego_up_d9),
+    file = file.path("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/Day 9",paste0("GO_Enrichment_D9_", ont, "_Upregulated.csv"))
+  )
+}
+```
+
+
+# FOR-loop producing dotplots for the enriched GO terms under BP, MF & CC
+```{r}
+# Dotplot generation for BP, CC & MF for D9
+for (ont in names(ego_up_d9_results)) {
+  cat("\nGenerating dotplot for D9 UPREGULATED genes:", ont, "\n")
+  result <- ego_up_d9_results[[ont]]
+  if (!is.null(result) && nrow(as.data.frame(result)) > 0) {
+    p_dot <- dotplot(result,
+                     showCategory = 15,
+                     font.size = 14,
+                     title = paste("Day 9 Enriched terms for upregulated genes -", ont))
+    print(p_dot)
+    ggsave(filename = file.path("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/figures", paste0("Dotplot_D9_Upregulated_", ont, ".png")),
+           plot = p_dot, width = 10, height = 8)
+  }
+}
+```
+
+
+# FOR-loop producing emapplots based on enriched GO terms in BP, MF & CC
+```{r}
+# This is an important step because pairwise_termisim is an S4 generic and may not be loaded from enrichplot until specifically stated
+enrichplot::pairwise_termsim
+```
+
+```{r}
+# Semantic similarity matrices for emapplots
+ego_up_d9_sim <- list()
+```
+
+```{r}
+# Loop to produce emapplots for all enriched terms for day 9
+for (ont in names(ego_up_d9_results)) {
+  cat("\nGenerating emapplot for D9 UPREGULATED genes:", ont, "\n")
+  result <- ego_up_d9_results[[ont]]
+  if (!is.null(result) && nrow(as.data.frame(result)) > 0) {
+    ego_sim_d9 <- enrichplot::pairwise_termsim(result)
+    ego_up_d9_sim[[ont]] <- ego_sim_d9
+    p_emap <- emapplot(
+      ego_sim_d9,
+      showCategory = 15,
+      layout = "nicely"
+    ) +
+      ggtitle(paste("GO Enrichment Similarity Network - Day 9 enriched terms for Upregulated genes", ont)) +
+      theme_void(base_size = 14) +
+      theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.background = element_rect(fill = "white", color = NA),
+        panel.background = element_rect(fill = "white", color = NA),
+        legend.position = "bottom",
+        legend.key.width = unit(2, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 13, face = "bold")
+      ) +
+      guides(
+        color = guide_colorbar(
+          title = "Adjusted p-value",
+          title.position = "top",
+          barwidth = 12,
+          barheight = 0.8,
+          label.position = "bottom"
+        )
+      )
+    ggsave(filename = file.path("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/Day 9", paste0("Emapplot_D9_Upregulated_", ont, ".png")),
+           plot = p_emap, width = 12, height = 10, bg = "white")
+    print(p_emap)
+  }
+}
+```
+
+
+# FOR-loop producing gene category network plots for enriched GO terms in BP, CC & MF
+```{r}
+# Ensure enrichplot package's cnetplot method is explicitly stated
+enrichplot::cnetplot  
+```
+
+```{r}
+# Create a vector of log2 fold changes for significantly upregulated genes
+fc_up_d9_vector <- res_d9_annot %>%
+  dplyr::filter(hgnc_symbol %in% strict_up_d9) %>%
+  dplyr::distinct(entrezgene_id, .keep_all = TRUE) %>%
+  dplyr::select(entrezgene_id, log2FoldChange) %>%
+  tidyr::drop_na() %>%
+  tibble::deframe()
+```
+
+```{r}
+# Define a function to generate and save cnetplots
+generate_cnet <- function(go_result, ontology_name) {
+  
+  if (nrow(as.data.frame(go_result)) == 0) {
+    message("Skipping ", ontology_name, " — no enrichment terms.")
+    return(NULL)
+  }
+
+  message("Generating cnetplot for ", ontology_name, "...")
+  
+  tryCatch({
+    plot <- enrichplot::cnetplot(
+      go_result,
+      showCategory = 5,
+      categorySize = "pvalue",
+      foldChange = fc_up_d9_vector,
+      circular = FALSE,
+      colorEdge = TRUE,
+      node_label = "all",
+      layout = "nicely"
+    ) +
+      ggtitle(paste(
+        "GO Enrichment Category Gene Network Plot:",
+        "Top enriched terms with associated genes —", ontology_name
+      )) +
+      theme_void(base_size = 14) +
+      theme(
+        plot.title = element_text(size = 16, face = "bold", hjust = 0.5),
+        plot.background = element_rect(fill = "white"),
+        panel.background = element_rect(fill = "white"),
+        legend.position = "bottom",
+        legend.key.width = unit(2, "cm"),
+        legend.key.height = unit(0.5, "cm"),
+        legend.text = element_text(size = 12),
+        legend.title = element_text(size = 13, face = "bold")
+      )
+
+    
+    out_path <- file.path(
+      "C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/Day 9",
+      paste0("Cnetplot_Upregulated_D9_", ontology_name, ".png")
+    )
+
+    ggsave(filename = out_path, plot = plot, width = 18, height = 12, bg = "white")
+    print(plot)
+
+  }, error = function(e) {
+    warning("Plotting failed for ", ontology_name, ": ", e$message)
+  })
+}
+
+# Apply the plotting function to all GO terms (BP, MF, CC)
+walk2(ego_up_d9_results, names(ego_up_d9_results), generate_cnet)
+```
+
+
+# Pathway Enrichment Analysis using KEGG, Reactome and WikiPathways
+```{r}
+# Ensure ENTREZ IDs are characters (to prevent enrichKEGG key error)
+entrez_up_d9 <- as.character(entrez_up_d9)
+entrez_down_d9 <- as.character(entrez_down_d9)
+background_genes_d9 <- as.character(background_genes_d9)
+```
+
+```{r}
+# Pathway Enrichment Analysis with Reactome
+run_reactome <- function(genes, label) {
+  result <- enrichPathway(
+    gene = genes,
+    organism = "human",
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.2,
+    universe = background_genes_d9,
+    pAdjustMethod = "BH",
+    readable = TRUE
+  )
+  write.csv(as.data.frame(result), paste0("Reactome_Enrichment_D9_", label, ".csv"), row.names = FALSE)
+  if (nrow(as.data.frame(result)) > 0) {
+    ggsave(
+      filename = paste0("Reactome_Dotplot_D9_", label, ".png"),
+      plot = dotplot(result, showCategory = 20) + ggtitle(paste("Reactome Enrichment –", label, "genes (Day 9)")),
+      width = 10, height = 8, dpi = 150
+    )
+  }
+  return(result)
+}
+
+reactome_result_up_d9 <- run_reactome(entrez_up_d9, "Upregulated")
+reactome_result_down_d9 <- run_reactome(entrez_down_d9, "Downregulated")
+```
+
+```{r}
+# KEGG Enrichment
+run_kegg <- function(genes, label) {
+  result <- enrichKEGG(
+    gene = genes,
+    organism = 'hsa',
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.2,
+    universe = background_genes_d9,
+    pAdjustMethod = "BH"
+  )
+  write.csv(as.data.frame(result), paste0("KEGG_Enrichment_D9_", label, ".csv"), row.names = FALSE)
+  if (nrow(as.data.frame(result)) > 0) {
+    ggsave(
+      filename = paste0("KEGG_Dotplot_D9_", label, ".png"),
+      plot = dotplot(result, showCategory = 20) + ggtitle(paste("KEGG Enrichment –", label, "genes (Day 9)")),
+      width = 10, height = 8, dpi = 150
+    )
+  }
+  return(result)
+}
+
+kegg_result_up_d9 <- run_kegg(entrez_up_d9, "Upregulated")
+kegg_result_down_d9 <- run_kegg(entrez_down_d9, "Downregulated")
+```
+
+```{r}
+# WikiPathways Enrichment
+msig_wiki <- msigdbr(species = "Homo sapiens", collection = "C2", subcollection = "CP:WIKIPATHWAYS")
+term2gene <- msig_wiki[, c("gs_name", "ncbi_gene")]
+
+run_wikipathway <- function(genes, label) {
+  result <- enricher(
+    gene = genes,
+    TERM2GENE = term2gene,
+    pvalueCutoff = 0.05,
+    qvalueCutoff = 0.2,
+    universe = background_genes_d9,
+    pAdjustMethod = "BH"
+  )
+  write.csv(as.data.frame(result), paste0("WikiPathways_Enrichment_D9_", label, ".csv"), row.names = FALSE)
+  if (nrow(as.data.frame(result)) > 0) {
+    ggsave(
+      filename = paste0("WikiPathways_Dotplot_D9_", label, ".png"),
+      plot = dotplot(result, showCategory = 20) + ggtitle(paste("WikiPathways Enrichment –", label, "genes (Day 9)")),
+      width = 10, height = 8, dpi = 160
+    )
+  }
+  return(result)
+}
+
+wiki_result_up_d9 <- run_wikipathway(entrez_up_d9, "Upregulated")
+wiki_result_down_d9 <- run_wikipathway(entrez_down_d9, "Downregulated")
+
+# Add readable gene symbols to outputs 
+map_entrez_column_to_symbols_d9 <- function(df) {
+  df$geneSymbols <- sapply(df$geneID, function(x) {
+    entrez_ids <- unlist(strsplit(x, "/"))
+    symbols <- mapIds(org.Hs.eg.db, keys = entrez_ids, column = "SYMBOL", keytype = "ENTREZID", multiVals = "first")
+    paste(na.omit(symbols), collapse = "/")
+  })
+  return(df)
+}
+```
+
+```{r}
+# Apply symbol mapping for downstream readability
+df_kegg_up <- map_entrez_column_to_symbols_d9(as.data.frame(kegg_result_up_d9))
+df_kegg_down <- map_entrez_column_to_symbols_d9(as.data.frame(kegg_result_down_d9))
+df_wiki_up <- map_entrez_column_to_symbols_d9(as.data.frame(wiki_result_up_d9))
+df_wiki_down <- map_entrez_column_to_symbols_d9(as.data.frame(wiki_result_down_d9))
+
+# Save symbol-mapped outputs
+write.csv(df_kegg_up,       "KEGG_D9_Upregulated_with_Symbols.csv",     row.names = FALSE)
+write.csv(df_kegg_down,     "KEGG_D9_Downregulated_with_Symbols.csv",   row.names = FALSE)
+write.csv(df_wiki_up,       "WikiPathways_D9_Upregulated_with_Symbols.csv", row.names = FALSE)
+write.csv(df_wiki_down,     "WikiPathways_D9_Downregulated_with_Symbols.csv", row.names = FALSE)
+```
+
+
+## Gene Set Enrichment analysis (GSEA) for d9
+
+# To perform Gene Set Enrichment Analysis, a ranked gene list was generated using the Wald statistic from DESeq2. Only genes with valid Entrez Gene IDs and non-missing statistics are retained. The resulting vector is named by Entrez ID and used as input for GSEA functions.
+```{r}
+# Prepare gene list ranked by Wald statistic
+gene_list_d9 <- res_d9_annot %>%
+  filter(!is.na(entrezgene_id), !is.na(stat)) %>%
+  distinct(entrezgene_id, .keep_all = TRUE) %>%
+  arrange(desc(stat)) %>%
+  dplyr::select(entrezgene_id, stat) %>%
+  deframe()  # Named numeric vector: stat values named by ENTREZ IDs
+```
+
+```{r}
+# Check for validation 
+head(gene_list_d9)
+length(gene_list_d9)
+```
+
+# GSEA conducted with MSigDB_Hallmark homo sapiens gene set
+```{r}
+# Get Hallmark MSigDB terms
+msig_hallmark <- msigdbr(
+  species = "Homo sapiens",
+  collection = "H"
+) %>% 
+  dplyr::select(gs_name, ncbi_gene)
+
+# Run GSEA
+gsea_hallmark_d9 <- GSEA(
+  geneList     = gene_list_d9,
+  TERM2GENE    = msig_hallmark,
+  pvalueCutoff = 0.05,
+  verbose      = FALSE
+)
+
+# Save results
+write.csv(as.data.frame(gsea_hallmark_d9), "GSEA_Hallmark_D9.csv", row.names = FALSE)
+```
+
+```{r}
+# Plot top 5 significant pathways of Hallmark by |NES|
+top5_hallmark <- as.data.frame(gsea_hallmark_d9) %>%
+  filter(p.adjust < 0.05, !is.na(core_enrichment)) %>%
+  arrange(desc(abs(NES))) %>%
+  slice_head(n = 5)
+
+for (i in seq_len(nrow(top5_hallmark))) {
+  pathway_id <- top5_hallmark$ID[i]
+  pathway_name <- top5_hallmark$Description[i]
+
+  plot <- gseaplot2(gsea_hallmark_d9, geneSetID = pathway_id, title = pathway_name)
+  filename <- paste0("GSEA_d9_Hallmark_", i, "_", str_replace_all(pathway_name, "[ /]", "_"), ".png")
+  ggsave(filename, plot = plot, width = 10, height = 6, dpi = 300)
+}
+```
+
+# GSEA conducted with KEGG gene set
+```{r}
+# Run GSEA with KEGG Pathways
+gsea_kegg_d9 <- gseKEGG(
+  geneList     = gene_list_d9,
+  organism     = 'hsa',
+  keyType      = "ncbi-geneid",
+  minGSSize    = 1,
+  maxGSSize    = 1000,
+  pvalueCutoff = 0.05,
+  eps = 0, # for improving p-value estimation
+  verbose      = FALSE
+)
+
+kegg_result_d9_df <- as.data.frame(gsea_kegg_d9)
+write.csv(as.data.frame(gsea_kegg_d9), "GSEA_KEGG_d9_ClusterProfiler.csv", row.names = FALSE)
+```
+
+```{r}
+# Filter through top 5 pathways with valid core_enrichment
+top5_kegg_d9 <- kegg_result_d9_df %>%
+  filter(p.adjust < 0.05) %>%     # Statistically significant`
+  arrange(desc(abs(NES))) %>%
+  filter(!is.na(core_enrichment), core_enrichment != "") %>%
+  slice_head(n = 5)
+
+# Loop through and plot each top enriched KEGG pathway
+for (i in seq_len(nrow(top5_kegg_d9))) {
+  pathway_id <- top5_kegg_d9$ID[i]
+  pathway_name <- top5_kegg_d9$Description[i]
+
+  p <- gseaplot2(gsea_kegg_d9, geneSetID = pathway_id, title = pathway_name)
+
+  file_name <- paste0("GSEA_d9_KEGG_plot_", i, "_", str_replace_all(pathway_name, "[ /]", "_"), ".png")
+
+  ggsave(filename = file_name, plot = p, width = 10, height = 6, dpi = 300)
+
+  print(p)
+}
+```
+
+# GSEA conducted with MSigDB curated (C2) homo sapiens gene set
+```{r}
+# Prepare MSigDB Reactome gene set
+msig_reactome <- msigdbr(species = "Homo sapiens", collection = "C2", subcollection = "CP:REACTOME") %>%
+  dplyr::select(gs_name, ncbi_gene)
+
+# Run GSEA with improved precision handling
+gsea_reactome_d9 <- GSEA(
+  geneList     = gene_list_d9,
+  TERM2GENE    = msig_reactome,
+  pvalueCutoff = 0.05,
+  eps          = 0,          # improve very low p-value estimation
+  verbose      = FALSE
+)
+
+write.csv(as.data.frame(gsea_reactome_d9), "GSEA_REACTOME_d9.csv", row.names = FALSE)
+```
+
+```{r}
+# Plot top 5 C2:CP:Reactome Pathways by NES value
+top5_reactome <- as.data.frame(gsea_reactome_d9) %>%
+  filter(p.adjust < 0.05) %>%
+  arrange(desc(abs(NES))) %>%
+  filter(!is.na(core_enrichment), core_enrichment != "") %>%
+  slice_head(n = 5)
+
+# Loop and generate plots
+for (i in seq_len(nrow(top5_reactome))) {
+  pathway_id <- top5_reactome$ID[i]
+  pathway_name <- top5_reactome$Description[i]
+  
+  p <- gseaplot2(gsea_reactome_d9, geneSetID = pathway_id, title = pathway_name)
+  
+  filename <- paste0("GSEA_d9_REACTOME_plot_", i, "_", str_replace_all(pathway_name, "[ /]", "_"), ".png")
+  ggsave(filename = filename, plot = p, width = 10, height = 6, dpi = 300)
+  
+  print(p)
+}
+```
+
+
+# Defining a function to plot heatmaps based on GSEA enriched terms and indexed against list of differentially expressed genes
+```{r}
+# Defining a function for plotting heatmaps based on GSEA enriched terms
+generate_gsea_heatmaps <- function(gsea_result, expr_matrix, deg_symbols, gene_annotations, prefix) {
+  top_pathways <- gsea_result %>%
+    as.data.frame() %>%
+    filter(p.adjust < 0.05, !is.na(core_enrichment)) %>%
+    arrange(desc(abs(NES))) %>%
+    slice_head(n = 5)
+
+  for (i in seq_len(nrow(top_pathways))) {
+    pathway <- top_pathways$ID[i]
+    pathway_name <- top_pathways$Description[i]
+    core_genes <- top_pathways$core_enrichment[i]
+    entrez_ids <- unlist(strsplit(core_genes, "/"))
+
+    # ENTREZ → SYMBOL
+    gsea_symbols <- gene_annotations %>%
+      filter(entrezgene_id %in% entrez_ids, !is.na(hgnc_symbol)) %>%
+      pull(hgnc_symbol) %>%
+      unique()
+
+    # Overlap with DEGs
+    overlapping_symbols <- intersect(gsea_symbols, deg_symbols)
+    if (length(overlapping_symbols) == 0) {
+      message("No DEG-GSEA overlap in: ", pathway)
+      next
+    }
+
+    # SYMBOL → ENSEMBL
+    ensembl_matches <- gene_annotations %>%
+      dplyr::filter(hgnc_symbol %in% overlapping_symbols) %>%
+      dplyr::select(hgnc_symbol, ensembl_gene_id) %>%
+      dplyr::distinct() %>%
+      drop_na()
+
+    gene_ensembl <- ensembl_matches$ensembl_gene_id
+    gene_symbols <- ensembl_matches$hgnc_symbol
+
+    expr_subset <- expr_matrix[rownames(expr_matrix) %in% gene_ensembl, ]
+    if (nrow(expr_subset) == 0) {
+      message("No matching expression data for: ", pathway)
+      next
+    }
+
+    rownames(expr_subset) <- gene_symbols[match(rownames(expr_subset), gene_ensembl)]
+
+    # Z-score normalization
+    expr_scaled <- t(scale(t(expr_subset)))
+
+    # Order columns
+    ordered_cols <- colnames(expr_scaled)[order(
+      grepl("Crispr", colnames(expr_scaled), ignore.case = TRUE),
+      stringr::str_extract(colnames(expr_scaled), "rep[0-9]+") %>% stringr::str_extract("[0-9]+") %>% as.integer()
+    )]
+    expr_scaled <- expr_scaled[, ordered_cols]
+
+    # Define color scheme
+    col_fun <- colorRamp2(
+      c(-2, 0, 2),
+      colorRampPalette(c("royalblue3", "gray90", "firebrick3"))(3)
+    )
+
+    # Plot
+    heatmap <- Heatmap(expr_scaled,
+      name = "Z-score",
+      col = col_fun,
+      cluster_rows = TRUE,
+      cluster_columns = FALSE,
+      show_column_names = TRUE,
+      show_row_names = TRUE,
+      row_names_gp = gpar(fontsize = ifelse(nrow(expr_scaled) > 40, 5, 8)),
+      column_names_rot = 45,
+      heatmap_legend_param = list(
+        title = "Z-score",
+        title_gp = gpar(fontsize = 10, fontface = "bold"),
+        labels_gp = gpar(fontsize = 9)
+      ),
+      column_title = paste("DEG-GSEA Overlap –", pathway_name),
+      column_title_gp = gpar(fontsize = 12, fontface = "bold")
+    )
+
+    # Save
+    png_filename <- paste0("mini_heatmap_", prefix, "_", i, "_", str_replace_all(pathway, "[^A-Za-z0-9_]", "_"), ".png")
+    png(png_filename, width = 1200, height = max(800, 40 * nrow(expr_scaled)), res = 150)
+    draw(heatmap)
+    dev.off()
+  }
+}
+```
+
+# Plotting mini-heatmaps based on overlap of differentially expressed genes with GSEA enriched pathways
+```{r}
+# Generate mini-heatmaps for Hallmark
+generate_gsea_heatmaps(
+  gsea_result       = gsea_hallmark_d9,
+  expr_matrix       = expr_log1p_d9,
+  deg_symbols       = DEG_d9_symbols,
+  gene_annotations  = gene_annotations,
+  prefix            = "hallmark"
+)
+
+# Generate mini-heatmaps for KEGG
+generate_gsea_heatmaps(
+  gsea_result       = gsea_kegg_d9,
+  expr_matrix       = expr_log1p_d9,
+  deg_symbols       = DEG_d9_symbols,
+  gene_annotations  = gene_annotations,
+  prefix            = "kegg"
+)
+
+# Generate mini-heatmaps for Reactome (MSigDB C2:CP:REACTOME)
+generate_gsea_heatmaps(
+  gsea_result       = gsea_reactome_d9,
+  expr_matrix       = expr_log1p_d9,
+  deg_symbols       = DEG_d9_symbols,
+  gene_annotations  = gene_annotations,
+  prefix            = "reactome"
+)
+```
+
+
+# Panelling of figures into one file
+```{r}
+# Load the saved PNG heatmaps
+img1 <- readPNG("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/figures/D9/mini_heatmap_hallmark_2_HALLMARK_ESTROGEN_RESPONSE_EARLY.png")  
+img2 <- readPNG("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/figures/D9/mini_heatmap_hallmark_3_HALLMARK_HYPOXIA.png")
+img3 <- readPNG("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/figures/D9/mini_heatmap_hallmark_4_HALLMARK_P53_PATHWAY.png")
+img4 <- readPNG("C:/Users/Aidan Saldanha/Documents/MSc Research project 2025/figures/D9/mini_heatmap_hallmark_5_HALLMARK_MYOGENESIS.png")
+
+# Convert to raster graphics objects
+g1 <- rasterGrob(img1, interpolate = TRUE)
+g2 <- rasterGrob(img2, interpolate = TRUE)
+g3 <- rasterGrob(img3, interpolate = TRUE)
+g4 <- rasterGrob(img4, interpolate = TRUE)
+
+# Create high-res PNG 
+png("panelled_hallmark_heatmaps_fixed.png", width = 2400, height = 1800, res = 200)
+grid.newpage()
+pushViewport(viewport(layout = grid.layout(2, 2)))
+
+
+vp <- function(row, col) viewport(layout.pos.row = row, layout.pos.col = col)
+grid.draw(editGrob(g1, vp = vp(1, 1)))
+grid.draw(editGrob(g2, vp = vp(1, 2)))
+grid.draw(editGrob(g3, vp = vp(2, 1)))
+grid.draw(editGrob(g4, vp = vp(2, 2)))
+
+dev.off()
+```
+
+
+# Integrating day 9 and day 16 results to formulate heatmaps comparing gene expression at different timepoints with different conditions
+```{r}
+# Ensembl to HGNC mapping
+ensembl <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+ensembl_ids <- rownames(d9)
+
+gene_map <- getBM(attributes = c("ensembl_gene_id", "hgnc_symbol"),
+                  filters = "ensembl_gene_id",
+                  values = ensembl_ids,
+                  mart = ensembl)
+```
+
+```{r}
+# Remove duplicates and unmapped gene ids
+gene_map <- gene_map[gene_map$hgnc_symbol != "", ]
+gene_map <- gene_map[!duplicated(gene_map$ensembl_gene_id), ]
+
+# Add gene symbols
+d9$ensembl_id <- rownames(d9)
+d16$ensembl_id <- rownames(d16)
+
+d9_merged <- merge(d9, gene_map, by.x = "ensembl_id", by.y = "ensembl_gene_id")
+d16_merged <- merge(d16, gene_map, by.x = "ensembl_id", by.y = "ensembl_gene_id")
+```
+
+```{r}
+# Collapse duplicates by averaging
+d9_collapsed <- d9_merged %>%
+  dplyr::select(-ensembl_id) %>%
+  dplyr::group_by(hgnc_symbol) %>%
+  dplyr::summarise(across(everything(), mean), .groups = "drop")
+
+d16_collapsed <- d16_merged %>%
+  dplyr::select(-ensembl_id) %>%
+  dplyr::group_by(hgnc_symbol) %>%
+  dplyr::summarise(across(everything(), mean), .groups = "drop")
+
+# Set rownames
+d9_final <- as.data.frame(d9_collapsed)
+rownames(d9_final) <- d9_final$hgnc_symbol
+d9_final$hgnc_symbol <- NULL
+
+d16_final <- as.data.frame(d16_collapsed)
+rownames(d16_final) <- d16_final$hgnc_symbol
+d16_final$hgnc_symbol <- NULL
+```
+
+```{r}
+colnames(d9_final) <- gsub("^D9_|^d9_", "", colnames(d9_final))
+colnames(d16_final) <- gsub("^D16_|^d16_", "", colnames(d16_final))
+
+# Add clean timepoint prefixes 
+colnames(d9_final) <- paste0("D9_", colnames(d9_final))
+colnames(d16_final) <- paste0("D16_", colnames(d16_final))
+
+# Align and combine
+common_genes <- intersect(rownames(d9_final), rownames(d16_final))
+d9_final <- d9_final[common_genes, ]
+d16_final <- d16_final[common_genes, ]
+combined <- cbind(d9_final, d16_final)
+```
+
+```{r}
+# Gene list curation and Z-score transformation
+genes_of_interest <- c("INS", "PDX1", "NKX6-1", "MAFA", "NEUROD1",
+                       "MKI67", "TOP2A", "CDK1", "PCNA", "MYC",
+                       "ABCC8", "KCNJ11", "GCK", "GLUD1", "SLC2A2",
+                       "GCG", "ARX")
+
+expr_matrix <- combined[genes_of_interest, , drop = FALSE]
+zscore_matrix <- t(scale(t(as.matrix(expr_matrix))))
+```
+
+```{r}
+# Separate genes of interest into function-based categories for annotation
+beta_genes <- c("INS", "PDX1", "NKX6-1", "MAFA", "NEUROD1")
+prolif_genes <- c("MKI67", "TOP2A", "CDK1", "PCNA", "MYC")
+chi_genes <- c("ABCC8", "KCNJ11", "GCK", "GLUD1", "SLC2A2")
+alpha_genes <- c("GCG", "ARX")
+
+gene_cluster <- data.frame(
+  Category = factor(rep(c("Beta Identity", "Proliferation", "CHI/Secretion", "Alpha/Other"),
+                        times = c(length(beta_genes), length(prolif_genes), length(chi_genes), length(alpha_genes))),
+                    levels = c("Beta Identity", "Proliferation", "CHI/Secretion", "Alpha/Other"))
+)
+rownames(gene_cluster) <- c(beta_genes, prolif_genes, chi_genes, alpha_genes)
+
+row_anno <- rowAnnotation(
+  Category = gene_cluster$Category,
+  col = list(Category = c(
+    "Beta Identity" = "#1b9e77",
+    "Proliferation" = "#d95f02",
+    "CHI/Secretion" = "#7570b3",
+    "Alpha/Other" = "#e7298a"
+  )),
+  annotation_width = unit(0.8, "cm"),
+  show_annotation_name = TRUE
+)
+```
+
+```{r}
+# Set manual order of condition labelling
+all_samples <- colnames(zscore_matrix)
+ordered_all <- sort(all_samples)
+ordered_wt <- sort(grep("WT", all_samples, value = TRUE))
+ordered_crispr <- sort(grep("Crispr", all_samples, value = TRUE))
+
+# Extract condition and timepoint
+get_timepoint <- function(x) sub("_.*", "", x)
+get_condition <- function(x) ifelse(grepl("WT", x), "WT", "CRISPR")
+
+top_anno_all <- HeatmapAnnotation(
+  Condition = get_condition(ordered_all),
+  Timepoint = get_timepoint(ordered_all),
+  col = list(
+    Condition = c("WT" = "#1f77b4", "CRISPR" = "#d62728"),
+    Timepoint = c("D9" = "#aec7e8", "D16" = "#ff9896")
+  ),
+  annotation_legend_param = list(title_gp = gpar(fontsize = 10, fontface = "bold"))
+)
+
+top_anno_wt <- HeatmapAnnotation(
+  Timepoint = get_timepoint(ordered_wt),
+  col = list(
+    Timepoint = c("D9" = "#aec7e8", "D16" = "#ff9896")
+  ),
+  annotation_legend_param = list(title_gp = gpar(fontsize = 10, fontface = "bold"))
+)
+
+top_anno_crispr <- HeatmapAnnotation(
+  Timepoint = get_timepoint(ordered_crispr),
+  col = list(
+    Timepoint = c("D9" = "#aec7e8", "D16" = "#ff9896")
+  ),
+  annotation_legend_param = list(title_gp = gpar(fontsize = 10, fontface = "bold"))
+)
+```
+
+```{r}
+# Define heatmap color function
+col_fun <- colorRamp2(c(-2, 0, 2), c("navy", "white", "firebrick3"))
+
+# Plot for CRISPR only
+png("CRISPR_d9_vs_d16_heatmap.png", width = 1000, height = 700)
+Heatmap(zscore_matrix[, ordered_crispr],
+        name = "Z-score",
+        col = col_fun,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "CRISPR: Gene Expression (D9 vs D16)",
+        top_annotation = top_anno_crispr,
+        left_annotation = row_anno,
+        show_column_names = TRUE,
+        show_row_names = TRUE)
+dev.off()
+
+# Plot for WT only
+png("WT_d9_vs_d16_heatmap.png", width = 1000, height = 700)
+Heatmap(zscore_matrix[, ordered_wt],
+        name = "Z-score",
+        col = col_fun,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "WT: Gene Expression (D9 vs D16)",
+        top_annotation = top_anno_wt,
+        left_annotation = row_anno,
+        show_column_names = TRUE,
+        show_row_names = TRUE)
+dev.off()
+
+# Plot for CRISPR vs WT and Day 9 vs Day 16
+png("CRISPR_vs_WT_d16_d9_heatmap.png", width = 1100, height = 750)
+Heatmap(zscore_matrix[, ordered_all],
+        name = "Z-score",
+        col = col_fun,
+        cluster_rows = FALSE,
+        cluster_columns = FALSE,
+        column_title = "WT vs CRISPR (D9 & D16)",
+        top_annotation = top_anno_all,
+        left_annotation = row_anno,
+        show_column_names = TRUE,
+        show_row_names = TRUE)
+dev.off()
+```
